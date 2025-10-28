@@ -1,0 +1,17 @@
+name: Trivy Scan
+
+on:
+    push:
+        branches:
+            - develop
+
+jobs:
+    trivy-scan:
+        uses: mnsltd/DEVOPS-githubworkflows/.github/workflows/trivy-java-ci.yml@develop
+        with:
+            java-version: '21'
+            java-distribution: 'temurin'
+            maven-command: 'mvn clean -Dbuild.number=42 deploy '
+            docker-build-command: 'docker build -t code:latest ./backend-app'
+            maven-version: '3.6.3'
+        secrets: inherit
