@@ -1,0 +1,81 @@
+#!/usr/bin/env groovy
+library "jenkins_shared_library@develop"
+
+pipeline {
+    environment {
+        VERSION = readMavenPom().getVersion()
+        NAME = readMavenPom().getArtifactId()
+        REGISTRY_CREDENTIAL = 'docker'
+        DOCKER_REGISTRY = "${readMavenPom().getVersion().contains("SNAPSHOT") ? "${DOCKER_SNAPSHOT_REGISTRY}" : "${DOCKER_RELEASE_REGISTRY}"}"
+    }
+    agent {
+        kubernetes {
+            defaultContainer 'jnlp'
+            yaml libraryResource('podTemplates/spsis-mw/jenkins-agent-all-docker.yml')
+        }
+    }
+    parameters {
+        booleanParam(name: 'SKIP_TEST', defaultValue: false, description: 'Skip the unit tests stage')
+        booleanParam(name: 'SKIP_MAVEN_DEPLOY', defaultValue: false, description: 'Skip the maven deploy stage')
+        booleanParam(name: 'SKIP_DOCKER_BUILD', defaultValue: false, description: 'Skip the docker build stage')
+        booleanParam(name: 'SKIP_DOCKER_PUSH', defaultValue: false, description: 'Skip the docker push stage')
+    }
+    options {
+        timeout(time: 1, unit: 'HOURS')
+        buildDiscarder(logRotator(daysToKeepStr: '10', numToKeepStr: '5', artifactNumToKeepStr: '2'))
+    }
+    stages {
+        stage('Maven build') {
+            steps {
+                container('maven') {
+                    echo "Building maven artifacts ${params.SKIP_TEST ? 'without' : 'with'} unit testing ..."
+                    sh "${mavenData.mavenBuildStage(params.SKIP_MAVEN_DEPLOY, params.SKIP_TEST, env.BUILD_NUMBER)}"
+                }
+            }
+        }
+        stage('Docker Build') {
+            when {
+                expression { params.SKIP_DOCKER_BUILD == false }
+            }
+            steps {
+                container('docker') {
+                    sh "${dockerData.dockerBuildStage(env.DOCKER_REGISTRY, env.NAME, env.VERSION)}"
+                }
+            }
+        }
+        stage('Docker Push') {
+            when {
+                expression { params.SKIP_DOCKER_PUSH == false }
+            }
+            steps {
+                container('docker') {
+                    withDockerRegistry([credentialsId: "${REGISTRY_CREDENTIAL}", url: "http://${DOCKER_REGISTRY}"]) {
+                        sh "${dockerData.dockerPushStage(env.DOCKER_REGISTRY, env.NAME, env.VERSION)}"
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                currentBuild.result = currentBuild.result ?: 'SUCCESS'
+            }
+        }
+        failure {
+            mail to: "${spsismwData.spsismwMailRecipients()}",
+                    subject: "Pipeline spsis-mw-assessment-backend-build-github / branch '${env.BRANCH_NAME}' failed",
+                    body: "Build: ${env.BUILD_URL}"
+        }
+        unstable {
+            mail to: "${spsismwData.spsismwMailRecipients()}",
+                    subject: "Pipeline spsis-mw-assessment-backend-build-github / branch '${env.BRANCH_NAME}' is unstable",
+                    body: "Build: ${env.BUILD_URL}"
+        }
+        fixed {
+            mail to: "${spsismwData.spsismwMailRecipients()}",
+                    subject: "Pipeline spsis-mw-assessment-backend-build-github / branch '${env.BRANCH_NAME}' is back to stable",
+                    body: "Build: ${env.BUILD_URL}"
+        }
+    }
+}
